@@ -51,6 +51,5 @@ async def init_db():
                 value TEXT
             )
         """)
-        # Bot boshlang'ich holati
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bot_status', 'active')")
         await db.commit()
