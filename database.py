@@ -16,21 +16,12 @@ async def init_db():
                 user_id INTEGER PRIMARY KEY
             )
         """)
-        # Kanallar (Ommaviy, Shaxsiy, Zayavka)
+        # Kanallar (Majburiy obuna uchun)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS channels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_id TEXT,
-                invite_link TEXT,
-                type TEXT  -- 'public', 'private', 'request'
-            )
-        """)
-        # Qo'shimcha havolalar
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT,
-                url TEXT
+                invite_link TEXT
             )
         """)
         # Animelar
@@ -40,8 +31,7 @@ async def init_db():
                 code TEXT UNIQUE,
                 title TEXT,
                 description TEXT,
-                poster_id TEXT,
-                seasons_count INTEGER DEFAULT 1
+                poster_id TEXT
             )
         """)
         # Qismlar
@@ -54,14 +44,13 @@ async def init_db():
                 file_id TEXT
             )
         """)
-        # Bot sozlamalari (Bot statusi va Auto-post kanali)
+        # Bot sozlamalari
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
             )
         """)
-        
-        # Boshlang'ich sozlama: bot holati "active"
+        # Bot boshlang'ich holati
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bot_status', 'active')")
         await db.commit()
