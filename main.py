@@ -23,7 +23,6 @@ DB_NAME = "anime_bot.db"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Bot holati (Global o'zgaruvchi)
 BOT_ACTIVE = True
 
 # --- FSM STATES ---
@@ -38,6 +37,7 @@ class EpisodeFSM(StatesGroup):
     code = State()
     ep_num = State()
     file_id = State()
+    photo = State()  # Poster uchun state
 
 class ChannelFSM(StatesGroup):
     channel_id = State()
@@ -77,7 +77,6 @@ async def is_admin(user_id: int) -> bool:
             return res is not None
 
 async def check_subscribes(user_id: int):
-    """Foydalanuvchi barcha majburiy kanallarga a'zo bo'lganini tekshiradi"""
     async with aiosqlite.connect(DB_NAME) as conn:
         async with conn.execute("SELECT channel_id, invite_link FROM channels") as cursor:
             channels = await cursor.fetchall()
@@ -131,7 +130,6 @@ async def start_cmd(message: types.Message):
         await message.answer("⚠️ Botda profilaktika/texnik ishlar olib borilmoqda. Birozdan so'ng urinib ko'ring!")
         return
 
-    # Obunani tekshirish
     unsubbed = await check_subscribes(message.from_user.id)
     if unsubbed:
         ikb = []
@@ -233,40 +231,18 @@ async def delete_anime_confirm(message: types.Message, state: FSMContext):
     await message.answer(f"🗑 Kodi `{code}` bo'lgan anime va uning barcha qismlari bazadan o'chirildi!", parse_mode="Markdown")
     await state.clear()
 
-# --- 🤖 AVTO-KANAL SOZLASH (AUTOMATION) ---
+# --- 🤖 AVTO-KANAL TUSHUNTIRISH ---
 @dp.message(F.text == "🤖 Avto-kanal sozlash")
 async def auto_channel_info(message: types.Message):
     if not await is_admin(message.from_user.id): return
     text = (
-        "🤖 **Avto-kanal sozlash qo'llanmasi:**\n\n"
-        "1. Botni anime joylanadigan kanalingizga **Admin** qilib tayinlang.\n"
-        "2. Kanalga video post joylayotganda **Caption (Izoh)** qismiga quyidagi formatda yozing:\n\n"
-        "`#code:101 #ep:1`\n\n"
-        "Bot avtomatik ravishda ushbu postni tutib oladi va `101` kodli animening `1`-qismi sifatida bazaga saqlaydi!"
+        "🤖 **Avto-kanal sozlamalari haqida:**\n\n"
+        "1. Botni kanalingizga admin qilib joylang va **'📢 Kanallar boshqaruvi'** bo'limidan kanal ID sini kiriting.\n"
+        "2. **'➕ Qism qo'shish'** tugmasini bosib videoni va poster rasmini yuborishingiz bilan bot avtomatik ravishda kanalingizga post joylab beradi!"
     )
     await message.answer(text, parse_mode="Markdown")
 
-@dp.channel_post(F.video & F.caption)
-async def auto_save_channel_post(message: types.Message):
-    caption = message.caption
-    if "#code:" in caption and "#ep:" in caption:
-        try:
-            parts = caption.split()
-            code, ep_num = None, None
-            for p in parts:
-                if p.startswith("#code:"): code = p.split(":")[1]
-                if p.startswith("#ep:"): ep_num = int(p.split(":")[1])
-            
-            if code and ep_num:
-                file_id = message.video.file_id
-                async with aiosqlite.connect(DB_NAME) as conn:
-                    await conn.execute("INSERT INTO episodes (anime_code, ep_num, file_id) VALUES (?, ?, ?)", (code, ep_num, file_id))
-                    await conn.commit()
-                print(f"✅ Avto-saqlandi: Kod {code}, Qism {ep_num}")
-        except Exception as e:
-            print(f"Avto-saqlashda xatolik: {e}")
-
-# --- ➕ ANIME VA QISM QO'SHISH ---
+# --- ➕ ANIME QO'SHISH ---
 @dp.message(F.text == "➕ Anime qo‘shish")
 async def add_anime_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
@@ -293,6 +269,7 @@ async def add_anime_code(message: types.Message, state: FSMContext):
             await message.answer(f"❌ Xatolik: Bunday kod bor! ({e})")
     await state.clear()
 
+# --- ➕ QISM QO'SHISH VA AVTO-POSTING ---
 @dp.message(F.text == "➕ Qism qo‘shish")
 async def add_ep_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
@@ -304,10 +281,11 @@ async def add_ep_code(message: types.Message, state: FSMContext):
     code = message.text.strip()
     async with aiosqlite.connect(DB_NAME) as conn:
         async with conn.execute("SELECT title FROM anime WHERE code = ?", (code,)) as cursor:
-            if not await cursor.fetchone():
+            anime = await cursor.fetchone()
+            if not anime:
                 await message.answer("❌ Bunday kodli anime topilmadi!")
                 return
-    await state.update_data(code=code)
+    await state.update_data(code=code, anime_title=anime[0])
     await state.set_state(EpisodeFSM.ep_num)
     await message.answer("Qism raqamini kiriting (masalan: `1`):")
 
@@ -316,16 +294,54 @@ async def add_ep_num(message: types.Message, state: FSMContext):
     if not message.text.isdigit(): return
     await state.update_data(ep_num=int(message.text))
     await state.set_state(EpisodeFSM.file_id)
-    await message.answer("Endi videoni yuboring:")
+    await message.answer("Endi ushbu qismning **VIDEOSINI** yuboring:")
 
 @dp.message(EpisodeFSM.file_id, F.video)
 async def add_ep_file(message: types.Message, state: FSMContext):
+    await state.update_data(file_id=message.video.file_id)
+    await state.set_state(EpisodeFSM.photo)
+    await message.answer("📸 Endi ushbu anime uchun **POSTER (RASM)** yuboring (Kanalga avto-post qilish uchun):")
+
+@dp.message(EpisodeFSM.photo, F.photo)
+async def add_ep_photo_and_post(message: types.Message, state: FSMContext):
+    photo_id = message.photo[-1].file_id
     data = await state.get_data()
+    
+    code = data['code']
+    ep_num = data['ep_num']
+    file_id = data['file_id']
+    title = data['anime_title']
+
+    # Bazaga saqlash
     async with aiosqlite.connect(DB_NAME) as conn:
         await conn.execute("INSERT INTO episodes (anime_code, ep_num, file_id) VALUES (?, ?, ?)", 
-                           (data['code'], data['ep_num'], message.video.file_id))
+                           (code, ep_num, file_id))
         await conn.commit()
-    await message.answer("✅ Qism saqlandi!")
+        
+        # Ula'ngan kanallarni olish
+        async with conn.execute("SELECT channel_id FROM channels") as cursor:
+            channels = await cursor.fetchall()
+
+    await message.answer(f"✅ Qism saqlandi!\n\nAnime: {title}\nKodi: `{code}`\nQism: {ep_num}", parse_mode="Markdown")
+
+    # Kanalga avto-post qilish
+    bot_info = await bot.get_me()
+    post_text = (
+        f"🎬 **{title}**\n\n"
+        f"🔹 **Qism:** {ep_num}-qism\n"
+        f"🔑 **Anime kodi:** `{code}`\n\n"
+        f"🍿 *Ushbu qismni tomosha qilish uchun pastdagi tugmani bosing va botga kodingizni yuboring!*"
+    )
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎬 Botda tomosha qilish", url=f"https://t.me/{bot_info.username}?start=start")]
+    ])
+
+    for (ch_id,) in channels:
+        try:
+            await bot.send_photo(chat_id=ch_id, photo=photo_id, caption=post_text, reply_markup=ikb, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Kanalga post joylashda xatolik ({ch_id}): {e}")
+
     await state.clear()
 
 # --- 👤 ADMINLAR BOSHQARUVI VA STATISTIKA ---
