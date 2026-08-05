@@ -58,6 +58,9 @@ class AdminState(StatesGroup):
     user_id = State()
     del_user_id = State()
 
+class AutoChannelState(StatesGroup):
+    ch_id = State()
+
 # --- DATABASE SETUP ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as conn:
@@ -99,7 +102,6 @@ async def is_admin(user_id: int) -> bool:
         async with conn.execute("SELECT user_id FROM admins WHERE user_id = ?", (user_id,)) as cursor:
             return (await cursor.fetchone()) is not None
 
-# Foydalanuvchi uchun tezkor obuna tekshiruvi
 async def check_subscribes(user_id: int):
     async with aiosqlite.connect(DB_NAME) as conn:
         async with conn.execute("SELECT ch_id, link, ch_type FROM channels") as cursor:
@@ -143,7 +145,8 @@ async def start_web_server():
 
 # --- START COMMAND & GENERAL HANDLERS ---
 @dp.message(CommandStart())
-async def start_cmd(message: types.Message):
+async def start_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
     async with aiosqlite.connect(DB_NAME) as conn:
         await conn.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (message.from_user.id,))
         await conn.commit()
@@ -345,7 +348,7 @@ async def add_ep_finish(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-# --- CHANNEL MANAGEMENT (KO'RISH VA O'CHIRISH) ---
+# --- CHANNEL MANAGEMENT ---
 @dp.message(F.text == "📢 Majburiy kanallar")
 async def channels_cmd(message: types.Message):
     if not await is_admin(message.from_user.id): return
@@ -406,7 +409,7 @@ async def del_ch(call: types.CallbackQuery):
     await call.answer("🗑 Kanal muvaffaqiyatli o'chirildi!", show_alert=True)
     await call.message.delete()
 
-# --- EXTRA LINKS MANAGEMENT (KO'RISH VA O'CHIRISH) ---
+# --- EXTRA LINKS MANAGEMENT ---
 @dp.message(F.text == "🔗 Qo'shimcha linklar")
 async def extra_links_cmd(message: types.Message):
     if not await is_admin(message.from_user.id): return
@@ -457,26 +460,32 @@ async def extra_link_save(message: types.Message, state: FSMContext):
     await message.answer("✅ Qo'shimcha link saqlandi!", reply_markup=admin_menu())
     await state.clear()
 
+# --- AUTO CHANNEL ---
 @dp.message(F.text == "📢 Avto-kanal biriktirish")
-async def auto_channel_cmd(message: types.Message):
+async def auto_channel_cmd(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
-    await message.answer("Avto-post yuboriladigan kanal IDsini yuboring (Masalan: `/autoch_-100123456789`)")
+    await state.set_state(AutoChannelState.ch_id)
+    await message.answer("Avto-post yuboriladigan kanal **ID**sini kiriting (Masalan: `-100123456789`):")
 
-@dp.message(F.text.startswith("/autoch_"))
-async def auto_channel_save(message: types.Message):
-    if not await is_admin(message.from_user.id): return
-    ch_id = int(message.text.replace("/autoch_", "").strip())
-    async with aiosqlite.connect(DB_NAME) as conn:
-        await conn.execute("INSERT OR REPLACE INTO auto_channels (ch_id) VALUES (?)", (ch_id,))
-        await conn.commit()
-    await message.answer("✅ Avto-kanal biriktirildi!")
+@dp.message(AutoChannelState.ch_id)
+async def auto_channel_save(message: types.Message, state: FSMContext):
+    try:
+        ch_id = int(message.text.strip())
+        async with aiosqlite.connect(DB_NAME) as conn:
+            await conn.execute("INSERT OR REPLACE INTO auto_channels (ch_id) VALUES (?)", (ch_id,))
+            await conn.commit()
+        await message.answer(f"✅ Avto-kanal (`{ch_id}`) muvaffaqiyatli biriktirildi!", reply_markup=admin_menu(), parse_mode="Markdown")
+    except ValueError:
+        await message.answer("❌ Kanal IDsi faqat raqamlardan iborat bo'lishi kerak! Qayta kiriting:")
+        return
+    await state.clear()
 
 # --- BROADCASTING ---
 @dp.message(F.text == "📨 Xabar yuborish")
 async def broad_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
     await state.set_state(BroadcastState.message)
-    await message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni kiriting:")
+    await message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni (matn, rasm yoki video) kiriting:")
 
 @dp.message(BroadcastState.message)
 async def broad_send(message: types.Message, state: FSMContext):
@@ -499,7 +508,7 @@ async def broad_send(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Xabar yuborildi!\n🟢 Muvaffaqiyatli: {success}\n🔴 Xato: {count - success}", reply_markup=admin_menu())
     await state.clear()
 
-# --- STATISTICS & ADMIN MANAGEMENT (QO'SHISH VA O'CHIRISH) ---
+# --- STATISTICS ---
 @dp.message(F.text == "📊 Mukammal Statistika")
 async def stats_cmd(message: types.Message):
     if not await is_admin(message.from_user.id): return
@@ -518,6 +527,7 @@ async def stats_cmd(message: types.Message):
         parse_mode="Markdown"
     )
 
+# --- ADMIN MANAGEMENT ---
 @dp.message(F.text == "👥 Adminlar ro'yxati")
 async def show_admins(message: types.Message):
     if not await is_admin(message.from_user.id): return
@@ -593,14 +603,14 @@ async def admin_delete_save(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-# --- SEARCH & DELIVERY (TEZKOR ANIME QIDIRUV VA QISMLAR) ---
+# --- SEARCH & DELIVERY ---
 @dp.message(F.text & ~F.text.startswith("/"))
 async def search_anime(message: types.Message):
     if not BOT_ACTIVE and not await is_admin(message.from_user.id): return
 
     unsubbed = await check_subscribes(message.from_user.id)
     if unsubbed and not await is_admin(message.from_user.id):
-        await start_cmd(message)
+        await start_cmd(message, None)
         return
 
     code = message.text.strip()
