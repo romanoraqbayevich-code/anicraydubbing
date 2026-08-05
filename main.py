@@ -56,6 +56,7 @@ class BroadcastState(StatesGroup):
 
 class AdminState(StatesGroup):
     user_id = State()
+    del_user_id = State()
 
 # --- DATABASE SETUP ---
 async def init_db():
@@ -98,6 +99,7 @@ async def is_admin(user_id: int) -> bool:
         async with conn.execute("SELECT user_id FROM admins WHERE user_id = ?", (user_id,)) as cursor:
             return (await cursor.fetchone()) is not None
 
+# Foydalanuvchi uchun tezkor obuna tekshiruvi
 async def check_subscribes(user_id: int):
     async with aiosqlite.connect(DB_NAME) as conn:
         async with conn.execute("SELECT ch_id, link, ch_type FROM channels") as cursor:
@@ -120,7 +122,8 @@ def admin_menu():
         [KeyboardButton(text="✏️ Anime tahrirlash"), KeyboardButton(text="🗑 Anime o‘chirish")],
         [KeyboardButton(text="📢 Majburiy kanallar"), KeyboardButton(text="🔗 Qo'shimcha linklar")],
         [KeyboardButton(text="📢 Avto-kanal biriktirish"), KeyboardButton(text="📨 Xabar yuborish")],
-        [KeyboardButton(text="📊 Mukammal Statistika"), KeyboardButton(text="👤 Adminlar boshqaruvi")],
+        [KeyboardButton(text="📊 Mukammal Statistika"), KeyboardButton(text="👥 Adminlar ro'yxati")],
+        [KeyboardButton(text="👤 Admin qo'shish"), KeyboardButton(text="🗑 Admin o'chirish")],
         [KeyboardButton(text="⚙️ Bot holati")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
@@ -342,7 +345,7 @@ async def add_ep_finish(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-# --- CHANNEL MANAGEMENT ---
+# --- CHANNEL MANAGEMENT (KO'RISH VA O'CHIRISH) ---
 @dp.message(F.text == "📢 Majburiy kanallar")
 async def channels_cmd(message: types.Message):
     if not await is_admin(message.from_user.id): return
@@ -350,11 +353,14 @@ async def channels_cmd(message: types.Message):
         async with conn.execute("SELECT id, title, ch_type FROM channels") as cursor:
             chs = await cursor.fetchall()
 
-    text = "📢 **Majburiy kanallar:**\n\n"
+    text = "📢 **Majburiy kanallar ro'yxati:**\n\n"
     ikb = []
-    for cid, ctitle, ctype in chs:
-        text += f"🔹 {ctitle} ({ctype.capitalize()})\n"
-        ikb.append([InlineKeyboardButton(text=f"❌ O'chirish: {ctitle}", callback_data=f"delch_{cid}")])
+    if chs:
+        for cid, ctitle, ctype in chs:
+            text += f"🔹 **{ctitle}** ({ctype.capitalize()})\n"
+            ikb.append([InlineKeyboardButton(text=f"❌ O'chirish: {ctitle}", callback_data=f"delch_{cid}")])
+    else:
+        text += "Hozircha majburiy kanallar yo'q.\n"
 
     ikb.append([InlineKeyboardButton(text="➕ Ommaviy kanal", callback_data="addch_ommaviy")])
     ikb.append([InlineKeyboardButton(text="➕ Shaxsiy kanal", callback_data="addch_shaxsiy")])
@@ -397,15 +403,44 @@ async def del_ch(call: types.CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as conn:
         await conn.execute("DELETE FROM channels WHERE id = ?", (cid,))
         await conn.commit()
-    await call.answer("🗑 Kanal o'chirildi!")
+    await call.answer("🗑 Kanal muvaffaqiyatli o'chirildi!", show_alert=True)
     await call.message.delete()
 
-# --- EXTRA LINKS & AUTO CHANNEL ---
+# --- EXTRA LINKS MANAGEMENT (KO'RISH VA O'CHIRISH) ---
 @dp.message(F.text == "🔗 Qo'shimcha linklar")
-async def extra_links_cmd(message: types.Message, state: FSMContext):
+async def extra_links_cmd(message: types.Message):
     if not await is_admin(message.from_user.id): return
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT id, title, url FROM extra_links") as cursor:
+            links = await cursor.fetchall()
+
+    text = "🔗 **Qo'shimcha linklar (tugmalar):**\n\n"
+    ikb = []
+    if links:
+        for lid, ltitle, lurl in links:
+            text += f"🔹 [{ltitle}]({lurl})\n"
+            ikb.append([InlineKeyboardButton(text=f"🗑 O'chirish: {ltitle}", callback_data=f"dellink_{lid}")])
+    else:
+        text += "Hozircha qo'shimcha linklar yo'q.\n"
+
+    ikb.append([InlineKeyboardButton(text="➕ Yangi link qo'shish", callback_data="add_extralink")])
+
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=ikb), parse_mode="Markdown", disable_web_page_preview=True)
+
+@dp.callback_query(F.data.startswith("dellink_"))
+async def del_link_callback(call: types.CallbackQuery):
+    lid = int(call.data.split("_")[1])
+    async with aiosqlite.connect(DB_NAME) as conn:
+        await conn.execute("DELETE FROM extra_links WHERE id = ?", (lid,))
+        await conn.commit()
+    await call.answer("🗑 Link o'chirildi!", show_alert=True)
+    await call.message.delete()
+
+@dp.callback_query(F.data == "add_extralink")
+async def add_link_start_cb(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(ExtraLinkState.title)
-    await message.answer("Tugma matnini kiriting (Masalan: `💬 Bizning guruh`):")
+    await call.message.answer("Tugma matnini kiriting (Masalan: `💬 Bizning guruh`):")
+    await call.answer()
 
 @dp.message(ExtraLinkState.title)
 async def extra_link_title(message: types.Message, state: FSMContext):
@@ -464,7 +499,7 @@ async def broad_send(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Xabar yuborildi!\n🟢 Muvaffaqiyatli: {success}\n🔴 Xato: {count - success}", reply_markup=admin_menu())
     await state.clear()
 
-# --- STATISTICS & ADMIN MANAGEMENT ---
+# --- STATISTICS & ADMIN MANAGEMENT (QO'SHISH VA O'CHIRISH) ---
 @dp.message(F.text == "📊 Mukammal Statistika")
 async def stats_cmd(message: types.Message):
     if not await is_admin(message.from_user.id): return
@@ -483,23 +518,82 @@ async def stats_cmd(message: types.Message):
         parse_mode="Markdown"
     )
 
-@dp.message(F.text == "👤 Adminlar boshqaruvi")
-async def admin_mgmt(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+@dp.message(F.text == "👥 Adminlar ro'yxati")
+async def show_admins(message: types.Message):
+    if not await is_admin(message.from_user.id): return
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT user_id FROM admins") as cursor:
+            admins = await cursor.fetchall()
+
+    text = f"👑 **Asosiy Admin:** `{ADMIN_ID}`\n\n👥 **Yordamchi Adminlar:**\n"
+    if admins:
+        for idx, (uid,) in enumerate(admins, 1):
+            text += f"{idx}. `{uid}`\n"
+    else:
+        text += "Hozircha qo'shimcha adminlar yo'q."
+
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(F.text == "👤 Admin qo'shish")
+async def admin_add_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Admin qo'shish huquqi faqat asosiy adminga berilgan!")
+        return
     await state.set_state(AdminState.user_id)
-    await message.answer("Yangi admin Telegram **ID**sini kiriting:")
+    await message.answer("Yangi adminning Telegram **ID**sini kiriting:")
 
 @dp.message(AdminState.user_id)
 async def admin_save(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): return
+    if not message.text.isdigit():
+        await message.answer("❌ ID faqat raqamlardan iborat bo'lishi kerak!")
+        return
     new_id = int(message.text.strip())
+    
+    if new_id == ADMIN_ID:
+        await message.answer("⚠️ Bu ID asosiy admin IDsi bilan bir xil!")
+        await state.clear()
+        return
+
     async with aiosqlite.connect(DB_NAME) as conn:
         await conn.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (new_id,))
         await conn.commit()
-    await message.answer(f"✅ `{new_id}` admin qilib tayinlandi!", reply_markup=admin_menu(), parse_mode="Markdown")
+    await message.answer(f"✅ `{new_id}` muvaffaqiyatli admin qilindi!", reply_markup=admin_menu(), parse_mode="Markdown")
     await state.clear()
 
-# --- SEARCH & DELIVERY ---
+@dp.message(F.text == "🗑 Admin o'chirish")
+async def admin_del_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Admin o'chirish huquqi faqat asosiy adminga berilgan!")
+        return
+    await state.set_state(AdminState.del_user_id)
+    await message.answer("O'chirmoqchi bo'lgan adminning Telegram **ID**sini kiriting:")
+
+@dp.message(AdminState.del_user_id)
+async def admin_delete_save(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ ID faqat raqamlardan iborat bo'lishi kerak!")
+        return
+    
+    target_id = int(message.text.strip())
+    if target_id == ADMIN_ID:
+        await message.answer("❌ Asosiy adminni o'chirib bo'lmaydi!")
+        await state.clear()
+        return
+
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT user_id FROM admins WHERE user_id = ?", (target_id,)) as cursor:
+            admin_exists = await cursor.fetchone()
+        
+        if admin_exists:
+            await conn.execute("DELETE FROM admins WHERE user_id = ?", (target_id,))
+            await conn.commit()
+            await message.answer(f"🗑 `{target_id}` adminlikdan olib tashlandi!", reply_markup=admin_menu(), parse_mode="Markdown")
+        else:
+            await message.answer("❌ Bunday IDli admin ro'yxatda topilmadi.")
+
+    await state.clear()
+
+# --- SEARCH & DELIVERY (TEZKOR ANIME QIDIRUV VA QISMLAR) ---
 @dp.message(F.text & ~F.text.startswith("/"))
 async def search_anime(message: types.Message):
     if not BOT_ACTIVE and not await is_admin(message.from_user.id): return
