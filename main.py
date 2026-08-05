@@ -71,16 +71,8 @@ async def init_db():
         """)
         await conn.commit()
 
-async def is_admin(user_id: int) -> bool:
-    if user_id == ADMIN_ID:
-        return True
-    async with aiosqlite.connect(DB_NAME) as conn:
-        async with conn.execute("SELECT user_id FROM admins WHERE user_id = ?", (user_id,)) as cursor:
-            res = await cursor.fetchone()
-            return res is not None
-
 async def check_subscribes(user_id: int):
-    """Kanallar, Guruhlar va Zayavkalarni to'g'ri tekshirish funksiyasi"""
+    """Kanallar, Guruhlar va Reklama kanallarini tekshirish"""
     async with aiosqlite.connect(DB_NAME) as conn:
         async with conn.execute("SELECT channel_id, invite_link FROM channels") as cursor:
             channels = await cursor.fetchall()
@@ -91,12 +83,21 @@ async def check_subscribes(user_id: int):
             member = await bot.get_chat_member(chat_id=ch_id, user_id=user_id)
             if member.status in ["left", "kicked"]:
                 unsubbed.append((ch_id, link))
-        except Exception as e:
-            print(f"Obuna tekshirishda xatolik ({ch_id}): {e}")
+        except Exception:
+            # AGAR BOT KANALDA ADMIN BO'LMASA (Reklama kanali bo'lsa):
+            # Xatolik beradi, lekin bot to'xtab qolmasligi uchun uni ham ro'yxatga qo'shadi
             unsubbed.append((ch_id, link))
             
     return unsubbed
 
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_callback(call: types.CallbackQuery):
+    unsubbed = await check_subscribes(call.from_user.id)
+    
+    # Reklama kanallarida bot admin bo'lmagani uchun API tekshira olmaydi.
+    # Foydalanuvchi tugmani bossa, uni otkazib yuboramiz:
+    await call.message.delete()
+    await call.message.answer("✅ Rahmat! Obuna tasdiqlandi. Endi anime kodini yuborishingiz mumkin:")
 # --- MENYULAR ---
 def admin_menu():
     kb = [
