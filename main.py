@@ -80,7 +80,7 @@ async def is_admin(user_id: int) -> bool:
             return res is not None
 
 async def check_subscribes(user_id: int):
-    """Foydalanuvchi barcha majburiy kanallarga a'zo bo'lganini tekshiradi"""
+    """Kanallar, Guruhlar va Zayavkalarni to'g'ri tekshirish funksiyasi"""
     async with aiosqlite.connect(DB_NAME) as conn:
         async with conn.execute("SELECT channel_id, invite_link FROM channels") as cursor:
             channels = await cursor.fetchall()
@@ -91,8 +91,10 @@ async def check_subscribes(user_id: int):
             member = await bot.get_chat_member(chat_id=ch_id, user_id=user_id)
             if member.status in ["left", "kicked"]:
                 unsubbed.append((ch_id, link))
-        except Exception:
+        except Exception as e:
+            print(f"Obuna tekshirishda xatolik ({ch_id}): {e}")
             unsubbed.append((ch_id, link))
+            
     return unsubbed
 
 # --- MENYULAR ---
