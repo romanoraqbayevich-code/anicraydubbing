@@ -4,7 +4,7 @@ import logging
 import aiosqlite
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -16,9 +16,12 @@ from aiogram.types import (
 )
 
 # --- CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8890621891:AAFX0yKQ81saY144zaFiBfGmAu75vi4cnmM")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "8369095793"))
+BOT_TOKEN = os.getenv("8890621891:AAFX0yKQ81saY144zaFiBfGmAu75vi4cnmM")
+ADMIN_ID = int(os.getenv("8369095793", "0"))
 DB_NAME = "anime_bot.db"
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN muhit o'zgaruvchisi (environment variable) o'rnatilmagan!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -130,6 +133,10 @@ def admin_menu():
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
+def cancel_menu():
+    kb = [[KeyboardButton(text="❌ Bekor qilish")]]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
 # --- RENDER PORT HEALTH CHECK ---
 async def health_check(request):
     return web.Response(text="Bot runs smoothly!", status=200)
@@ -143,31 +150,91 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
+# --- HELPER: CANCEL STATE ---
+@dp.message(Command("cancel"))
+@dp.message(F.text == "❌ Bekor qilish")
+async def cancel_handler(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        return
+    await state.clear()
+    if await is_admin(message.from_user.id):
+        await message.answer("❌ Amaliyot bekor qilindi.", reply_markup=admin_menu())
+    else:
+        await message.answer("❌ Amaliyot bekor qilindi.", reply_markup=types.ReplyKeyboardRemove())
+
+# --- HELPER: SEND ANIME BY CODE ---
+async def send_anime_by_code(message_or_call, code: str):
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT title FROM anime WHERE code = ?", (code,)) as cursor:
+            anime = await cursor.fetchone()
+        if not anime:
+            if isinstance(message_or_call, types.Message):
+                await message_or_call.answer("❌ Bu kodli anime topilmadi yoki o'chirilgan.")
+            else:
+                await message_or_call.message.answer("❌ Bu kodli anime topilmadi yoki o'chirilgan.")
+            return
+
+        async with conn.execute("SELECT season, ep_num FROM episodes WHERE anime_code = ? ORDER BY season ASC, ep_num ASC", (code,)) as cursor:
+            episodes = await cursor.fetchall()
+
+    if not episodes:
+        msg_text = f"🎬 **{anime[0]}** animedan qismlar topilmadi."
+        if isinstance(message_or_call, types.Message):
+            await message_or_call.answer(msg_text, parse_mode="Markdown")
+        else:
+            await message_or_call.message.answer(msg_text, parse_mode="Markdown")
+        return
+
+    ikb, row = [], []
+    for season, ep_num in episodes:
+        row.append(InlineKeyboardButton(text=f"{season}-Fasl {ep_num}-Qism", callback_data=f"play_{code}_{season}_{ep_num}"))
+        if len(row) == 2:
+            ikb.append(row)
+            row = []
+    if row: 
+        ikb.append(row)
+
+    caption = f"🎬 **{anime[0]}**\nKo'rmoqchi bo'lgan qismingizni tanlang:"
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=ikb)
+
+    if isinstance(message_or_call, types.Message):
+        await message_or_call.answer(caption, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await message_or_call.message.answer(caption, reply_markup=reply_markup, parse_mode="Markdown")
+
 # --- START COMMAND & GENERAL HANDLERS ---
 @dp.message(CommandStart())
-async def start_cmd(message: types.Message, state: FSMContext):
+async def start_cmd(message: types.Message, state: FSMContext, command: CommandObject = None):
     await state.clear()
+    args = command.args if command else None
+
     async with aiosqlite.connect(DB_NAME) as conn:
         await conn.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (message.from_user.id,))
         await conn.commit()
 
-    if await is_admin(message.from_user.id):
-        await message.answer("🛠 Admin paneliga xush kelibsiz:", reply_markup=admin_menu())
-        return
-
-    if not BOT_ACTIVE:
+    if not BOT_ACTIVE and not await is_admin(message.from_user.id):
         await message.answer("⚠️ Botda profilaktika ishlari olib borilmoqda. Birozdan so'ng urinib ko'ring.")
         return
 
     unsubbed = await check_subscribes(message.from_user.id)
-    if unsubbed:
+    if unsubbed and not await is_admin(message.from_user.id):
         ikb = []
         for idx, (link, ch_type) in enumerate(unsubbed, 1):
             type_label = " (Zayavka)" if ch_type == "zayafka" else ""
             ikb.append([InlineKeyboardButton(text=f"📢 {idx}-Kanalga a'zo bo'lish{type_label}", url=link)])
         
-        ikb.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_sub")])
+        cb_data = f"check_sub_{args}" if args else "check_sub"
+        ikb.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data=cb_data)])
         await message.answer("⚠️ Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:", reply_markup=InlineKeyboardMarkup(inline_keyboard=ikb))
+        return
+
+    if args:
+        await send_anime_by_code(message, args)
+        return
+
+    if await is_admin(message.from_user.id):
+        await message.answer("🛠 Admin paneliga xush kelibsiz:", reply_markup=admin_menu())
         return
 
     async with aiosqlite.connect(DB_NAME) as conn:
@@ -183,12 +250,18 @@ async def start_cmd(message: types.Message, state: FSMContext):
     else:
         await message.answer(text)
 
-@dp.callback_query(F.data == "check_sub")
+@dp.callback_query(F.data.startswith("check_sub"))
 async def check_sub_cb(call: types.CallbackQuery):
     unsubbed = await check_subscribes(call.from_user.id)
+    parts = call.data.split("_")
+    target_code = parts[2] if len(parts) > 2 else None
+
     if not unsubbed:
         await call.message.delete()
-        await call.message.answer("✅ Obuna tasdiqlandi! Anime kodini yuborishingiz mumkin:")
+        if target_code:
+            await send_anime_by_code(call, target_code)
+        else:
+            await call.message.answer("✅ Obuna tasdiqlandi! Anime kodini yuborishingiz mumkin:")
     else:
         await call.answer("❌ Barcha kanallarga a'zo bo'lmadingiz!", show_alert=True)
 
@@ -206,13 +279,13 @@ async def toggle_bot(message: types.Message):
 async def add_anime_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
     await state.set_state(AnimeState.title)
-    await message.answer("Anime nomini kiriting:")
+    await message.answer("Anime nomini kiriting:", reply_markup=cancel_menu())
 
 @dp.message(AnimeState.title)
 async def add_anime_title(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text)
     await state.set_state(AnimeState.code)
-    await message.answer("Anime uchun **KOD** kiriting (masalan: `101`):")
+    await message.answer("Anime uchun **KOD** kiriting (masalan: `101`):", reply_markup=cancel_menu(), parse_mode="Markdown")
 
 @dp.message(AnimeState.code)
 async def add_anime_code(message: types.Message, state: FSMContext):
@@ -223,15 +296,15 @@ async def add_anime_code(message: types.Message, state: FSMContext):
             await conn.execute("INSERT INTO anime (code, title) VALUES (?, ?)", (code, data['title']))
             await conn.commit()
             await message.answer(f"✅ Anime saqlandi!\nNomi: {data['title']}\nKodi: `{code}`", reply_markup=admin_menu(), parse_mode="Markdown")
-        except:
-            await message.answer("❌ Bu kod allaqachon mavjud!")
+        except Exception:
+            await message.answer("❌ Bu kod allaqachon mavjud!", reply_markup=admin_menu())
     await state.clear()
 
 @dp.message(F.text == "✏️ Anime tahrirlash")
 async def edit_anime_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
     await state.set_state(EditAnimeState.code)
-    await message.answer("Tahrirlamoqchi bo'lgan anime **KODINI** kiriting:")
+    await message.answer("Tahrirlamoqchi bo'lgan anime **KODINI** kiriting:", reply_markup=cancel_menu())
 
 @dp.message(EditAnimeState.code)
 async def edit_anime_code(message: types.Message, state: FSMContext):
@@ -240,12 +313,12 @@ async def edit_anime_code(message: types.Message, state: FSMContext):
         async with conn.execute("SELECT title FROM anime WHERE code = ?", (code,)) as cursor:
             anime = await cursor.fetchone()
     if not anime:
-        await message.answer("❌ Bunday kodli anime topilmadi!")
+        await message.answer("❌ Bunday kodli anime topilmadi!", reply_markup=admin_menu())
         await state.clear()
         return
     await state.update_data(code=code)
     await state.set_state(EditAnimeState.new_title)
-    await message.answer(f"Eski nomi: **{anime[0]}**\nYangi nomni kiriting:")
+    await message.answer(f"Eski nomi: **{anime[0]}**\nYangi nomni kiriting:", reply_markup=cancel_menu(), parse_mode="Markdown")
 
 @dp.message(EditAnimeState.new_title)
 async def edit_anime_save(message: types.Message, state: FSMContext):
@@ -276,7 +349,7 @@ async def del_anime_confirm(message: types.Message):
 async def add_ep_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
     await state.set_state(EpisodeState.code)
-    await message.answer("Anime kodini kiriting:")
+    await message.answer("Anime kodini kiriting:", reply_markup=cancel_menu())
 
 @dp.message(EpisodeState.code)
 async def add_ep_code(message: types.Message, state: FSMContext):
@@ -285,32 +358,36 @@ async def add_ep_code(message: types.Message, state: FSMContext):
         async with conn.execute("SELECT title FROM anime WHERE code = ?", (code,)) as cursor:
             anime = await cursor.fetchone()
     if not anime:
-        await message.answer("❌ Anime topilmadi!")
+        await message.answer("❌ Anime topilmadi!", reply_markup=admin_menu())
         await state.clear()
         return
     await state.update_data(code=code, title=anime[0])
     await state.set_state(EpisodeState.season)
-    await message.answer("Fasl raqamini kiriting (masalan: `1`):")
+    await message.answer("Fasl raqamini kiriting (masalan: `1`):", reply_markup=cancel_menu(), parse_mode="Markdown")
 
 @dp.message(EpisodeState.season)
 async def add_ep_season(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): return
+    if not message.text.isdigit(): 
+        await message.answer("❌ Iltimos, raqam kiriting!")
+        return
     await state.update_data(season=int(message.text))
     await state.set_state(EpisodeState.ep_num)
-    await message.answer("Qism raqamini kiriting:")
+    await message.answer("Qism raqamini kiriting:", reply_markup=cancel_menu())
 
 @dp.message(EpisodeState.ep_num)
 async def add_ep_num(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): return
+    if not message.text.isdigit(): 
+        await message.answer("❌ Iltimos, raqam kiriting!")
+        return
     await state.update_data(ep_num=int(message.text))
     await state.set_state(EpisodeState.video)
-    await message.answer("📹 Videoni yuboring:")
+    await message.answer("📹 Videoni yuboring:", reply_markup=cancel_menu())
 
 @dp.message(EpisodeState.video, F.video)
 async def add_ep_video(message: types.Message, state: FSMContext):
     await state.update_data(file_id=message.video.file_id)
     await state.set_state(EpisodeState.poster)
-    await message.answer("📸 Kanalga avto-post uchun **POSTER (RASM)** yuboring:")
+    await message.answer("📸 Kanalga avto-post uchun **POSTER (RASM)** yuboring:", reply_markup=cancel_menu(), parse_mode="Markdown")
 
 @dp.message(EpisodeState.poster, F.photo)
 async def add_ep_finish(message: types.Message, state: FSMContext):
@@ -332,19 +409,19 @@ async def add_ep_finish(message: types.Message, state: FSMContext):
 
     bot_info = await bot.get_me()
     ikb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🎬 Botda tomosha qilish", url=f"https://t.me/{bot_info.username}?start=start")
+        InlineKeyboardButton(text="🎬 Botda tomosha qilish", url=f"https://t.me/{bot_info.username}?start={code}")
     ]])
 
     for (ch_id,) in auto_ch:
         try:
             if count == 0:
-                season_text = f"🔥 **YANGI FASL PREMYERASI!**\n\n🎬 **Nomi:** {title}\n🗓 **Fasl:** {season}-Fasl\n🔑 **Kodi:** `{code}`"
-                await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=season_text, reply_markup=ikb, parse_mode="Markdown")
+                caption_text = f"🔥 **YANGI FASL PREMYERASI!**\n\n🎬 **Nomi:** {title}\n🗓 **Fasl:** {season}-Fasl | 1-Qism\n🔑 **Kodi:** `{code}`"
+            else:
+                caption_text = f"🎬 **{title}**\n\n📌 **{season}-Fasl | {ep_num}-Qism**\n🔑 **Anime kodi:** `{code}`"
 
-            ep_text = f"🎬 **{title}**\n\n📌 **{season}-Fasl | {ep_num}-Qism**\n🔑 **Anime kodi:** `{code}`"
-            await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=ep_text, reply_markup=ikb, parse_mode="Markdown")
+            await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=caption_text, reply_markup=ikb, parse_mode="Markdown")
         except Exception as e:
-            print(f"Auto post error: {e}")
+            logging.error(f"Auto post error for channel {ch_id}: {e}")
 
     await state.clear()
 
@@ -376,19 +453,23 @@ async def add_ch_type(call: types.CallbackQuery, state: FSMContext):
     ch_type = call.data.split("_")[1]
     await state.update_data(ch_type=ch_type)
     await state.set_state(ChannelState.ch_id)
-    await call.message.answer("Kanal **ID**sini kiriting (masalan: `-100123456789`):")
+    await call.message.answer("Kanal **ID**sini kiriting (masalan: `-100123456789`):", reply_markup=cancel_menu())
 
 @dp.message(ChannelState.ch_id)
 async def add_ch_id(message: types.Message, state: FSMContext):
-    await state.update_data(ch_id=int(message.text.strip()))
-    await state.set_state(ChannelState.title)
-    await message.answer("Kanal nomini kiriting:")
+    try:
+        ch_id = int(message.text.strip())
+        await state.update_data(ch_id=ch_id)
+        await state.set_state(ChannelState.title)
+        await message.answer("Kanal nomini kiriting:", reply_markup=cancel_menu())
+    except ValueError:
+        await message.answer("❌ ID faqat raqamlardan iborat bo'lishi kerak!")
 
 @dp.message(ChannelState.title)
 async def add_ch_title(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text.strip())
     await state.set_state(ChannelState.link)
-    await message.answer("Kanal **LINKI**ni kiriting (Masalan: `https://t.me/...`):")
+    await message.answer("Kanal **LINKI**ni kiriting (Masalan: `https://t.me/...`):", reply_markup=cancel_menu())
 
 @dp.message(ChannelState.link)
 async def add_ch_save(message: types.Message, state: FSMContext):
@@ -442,14 +523,14 @@ async def del_link_callback(call: types.CallbackQuery):
 @dp.callback_query(F.data == "add_extralink")
 async def add_link_start_cb(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(ExtraLinkState.title)
-    await call.message.answer("Tugma matnini kiriting (Masalan: `💬 Bizning guruh`):")
+    await call.message.answer("Tugma matnini kiriting (Masalan: `💬 Bizning guruh`):", reply_markup=cancel_menu())
     await call.answer()
 
 @dp.message(ExtraLinkState.title)
 async def extra_link_title(message: types.Message, state: FSMContext):
     await state.update_data(title=message.text)
     await state.set_state(ExtraLinkState.url)
-    await message.answer("URL manzilni kiriting:")
+    await message.answer("URL manzilni kiriting:", reply_markup=cancel_menu())
 
 @dp.message(ExtraLinkState.url)
 async def extra_link_save(message: types.Message, state: FSMContext):
@@ -465,7 +546,7 @@ async def extra_link_save(message: types.Message, state: FSMContext):
 async def auto_channel_cmd(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
     await state.set_state(AutoChannelState.ch_id)
-    await message.answer("Avto-post yuboriladigan kanal **ID**sini kiriting (Masalan: `-100123456789`):")
+    await message.answer("Avto-post yuboriladigan kanal **ID**sini kiriting (Masalan: `-100123456789`):", reply_markup=cancel_menu())
 
 @dp.message(AutoChannelState.ch_id)
 async def auto_channel_save(message: types.Message, state: FSMContext):
@@ -485,7 +566,7 @@ async def auto_channel_save(message: types.Message, state: FSMContext):
 async def broad_start(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id): return
     await state.set_state(BroadcastState.message)
-    await message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni (matn, rasm yoki video) kiriting:")
+    await message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni (matn, rasm yoki video) kiriting:", reply_markup=cancel_menu())
 
 @dp.message(BroadcastState.message)
 async def broad_send(message: types.Message, state: FSMContext):
@@ -494,16 +575,17 @@ async def broad_send(message: types.Message, state: FSMContext):
             users = await cursor.fetchall()
 
     success, count = 0, 0
-    await message.answer("🚀 Xabar yuborish boshlandi...")
+    await message.answer("🚀 Xabar yuborish boshlandi...", reply_markup=admin_menu())
 
     for (uid,) in users:
         try:
             await message.copy_to(chat_id=uid)
             success += 1
-        except:
+        except Exception:
             pass
         count += 1
-        if count % 20 == 0: await asyncio.sleep(1)
+        if count % 20 == 0: 
+            await asyncio.sleep(1)
 
     await message.answer(f"✅ Xabar yuborildi!\n🟢 Muvaffaqiyatli: {success}\n🔴 Xato: {count - success}", reply_markup=admin_menu())
     await state.clear()
@@ -550,7 +632,7 @@ async def admin_add_start(message: types.Message, state: FSMContext):
         await message.answer("❌ Admin qo'shish huquqi faqat asosiy adminga berilgan!")
         return
     await state.set_state(AdminState.user_id)
-    await message.answer("Yangi adminning Telegram **ID**sini kiriting:")
+    await message.answer("Yangi adminning Telegram **ID**sini kiriting:", reply_markup=cancel_menu())
 
 @dp.message(AdminState.user_id)
 async def admin_save(message: types.Message, state: FSMContext):
@@ -560,7 +642,7 @@ async def admin_save(message: types.Message, state: FSMContext):
     new_id = int(message.text.strip())
     
     if new_id == ADMIN_ID:
-        await message.answer("⚠️ Bu ID asosiy admin IDsi bilan bir xil!")
+        await message.answer("⚠️ Bu ID asosiy admin IDsi bilan bir xil!", reply_markup=admin_menu())
         await state.clear()
         return
 
@@ -576,7 +658,7 @@ async def admin_del_start(message: types.Message, state: FSMContext):
         await message.answer("❌ Admin o'chirish huquqi faqat asosiy adminga berilgan!")
         return
     await state.set_state(AdminState.del_user_id)
-    await message.answer("O'chirmoqchi bo'lgan adminning Telegram **ID**sini kiriting:")
+    await message.answer("O'chirmoqchi bo'lgan adminning Telegram **ID**sini kiriting:", reply_markup=cancel_menu())
 
 @dp.message(AdminState.del_user_id)
 async def admin_delete_save(message: types.Message, state: FSMContext):
@@ -586,7 +668,7 @@ async def admin_delete_save(message: types.Message, state: FSMContext):
     
     target_id = int(message.text.strip())
     if target_id == ADMIN_ID:
-        await message.answer("❌ Asosiy adminni o'chirib bo'lmaydi!")
+        await message.answer("❌ Asosiy adminni o'chirib bo'lmaydi!", reply_markup=admin_menu())
         await state.clear()
         return
 
@@ -599,42 +681,22 @@ async def admin_delete_save(message: types.Message, state: FSMContext):
             await conn.commit()
             await message.answer(f"🗑 `{target_id}` adminlikdan olib tashlandi!", reply_markup=admin_menu(), parse_mode="Markdown")
         else:
-            await message.answer("❌ Bunday IDli admin ro'yxatda topilmadi.")
+            await message.answer("❌ Bunday IDli admin ro'yxatda topilmadi.", reply_markup=admin_menu())
 
     await state.clear()
 
 # --- SEARCH & DELIVERY ---
 @dp.message(F.text & ~F.text.startswith("/"))
-async def search_anime(message: types.Message):
+async def search_anime(message: types.Message, state: FSMContext):
     if not BOT_ACTIVE and not await is_admin(message.from_user.id): return
 
     unsubbed = await check_subscribes(message.from_user.id)
     if unsubbed and not await is_admin(message.from_user.id):
-        await start_cmd(message, None)
+        await start_cmd(message, state)
         return
 
     code = message.text.strip()
-    async with aiosqlite.connect(DB_NAME) as conn:
-        async with conn.execute("SELECT title FROM anime WHERE code = ?", (code,)) as cursor:
-            anime = await cursor.fetchone()
-        if not anime: return
-
-        async with conn.execute("SELECT season, ep_num FROM episodes WHERE anime_code = ? ORDER BY season ASC, ep_num ASC", (code,)) as cursor:
-            episodes = await cursor.fetchall()
-
-    if not episodes:
-        await message.answer(f"🎬 **{anime[0]}** animedan qismlar topilmadi.")
-        return
-
-    ikb, row = [], []
-    for season, ep_num in episodes:
-        row.append(InlineKeyboardButton(text=f"{season}-Fasl {ep_num}-Qism", callback_data=f"play_{code}_{season}_{ep_num}"))
-        if len(row) == 2:
-            ikb.append(row)
-            row = []
-    if row: ikb.append(row)
-
-    await message.answer(f"🎬 **{anime[0]}**\nKo'rmoqchi bo'lgan qismingizni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=ikb), parse_mode="Markdown")
+    await send_anime_by_code(message, code)
 
 @dp.callback_query(F.data.startswith("play_"))
 async def play_ep(call: types.CallbackQuery):
