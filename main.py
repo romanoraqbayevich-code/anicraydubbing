@@ -396,7 +396,112 @@ async def add_ep_finish(message: types.Message, state: FSMContext):
             print(f"Auto post error: {e}")
 
     await state.clear()
+# --- BULK EPISODE MANAGEMENT ---
+@dp.message(F.text == "📦 Ommaviy qism qo'shish")
+async def bulk_ep_start(message: types.Message, state: FSMContext):
+    if not await is_admin(message.from_user.id): return
+    await state.set_state(BulkEpisodeState.code)
+    await message.answer("Anime kodini kiriting:")
 
+@dp.message(BulkEpisodeState.code)
+async def bulk_ep_code(message: types.Message, state: FSMContext):
+    code = message.text.strip()
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT title FROM anime WHERE code = ?", (code,)) as cursor:
+            anime = await cursor.fetchone()
+    if not anime:
+        await message.answer("❌ Anime topilmadi!")
+        await state.clear()
+        return
+    await state.update_data(code=code, title=anime[0], file_ids=[])
+    await state.set_state(BulkEpisodeState.season)
+    await message.answer("Fasl raqamini kiriting (masalan: `1`):")
+
+@dp.message(BulkEpisodeState.season)
+async def bulk_ep_season(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Faqat raqam kiriting!")
+        return
+    await state.update_data(season=int(message.text))
+    await state.set_state(BulkEpisodeState.start_ep)
+    await message.answer("Birinchi yuklanadigan qism raqamini kiriting (Masalan: `1`):")
+
+@dp.message(BulkEpisodeState.start_ep)
+async def bulk_ep_start_num(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Faqat raqam kiriting!")
+        return
+    await state.update_data(start_ep=int(message.text))
+    await state.set_state(BulkEpisodeState.videos)
+    await message.answer("📹 Videolarni birin-ketin yuboring (12, 25 yoki istalgancha).\n\nBarcha videolarni yuborib bo'lgach, **/done** buyrug'ini yuboring!")
+
+@dp.message(BulkEpisodeState.videos, F.video)
+async def bulk_ep_collect_video(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    file_ids = data.get("file_ids", [])
+    file_ids.append(message.video.file_id)
+    await state.update_data(file_ids=file_ids)
+    await message.answer(f"✅ {len(file_ids)}-video qabul qilindi. Yana yuboring yoki **/done** deb yozing.")
+
+@dp.message(BulkEpisodeState.videos, Command("done"))
+@dp.message(BulkEpisodeState.videos, F.text == "/done")
+async def bulk_ep_finish_videos(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    file_ids = data.get("file_ids", [])
+    if not file_ids:
+        await message.answer("❌ Hali hech qanday video yubormadingiz! Videolarni yuboring:")
+        return
+    await state.set_state(BulkEpisodeState.poster)
+    await message.answer(f"📸 Jami **{len(file_ids)} ta** qism qabul qilindi.\n\nKanalga avto-post yuborish uchun **POSTER (RASM)** yuboring:")
+
+@dp.message(BulkEpisodeState.poster, F.photo)
+async def bulk_ep_save_all(message: types.Message, state: FSMContext):
+    poster_id = message.photo[-1].file_id
+    data = await state.get_data()
+    code = data['code']
+    season = data['season']
+    curr_ep = data['start_ep']
+    file_ids = data['file_ids']
+    title = data['title']
+
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT COUNT(*) FROM episodes WHERE anime_code = ? AND season = ?", (code, season)) as cursor:
+            count = (await cursor.fetchone())[0]
+
+        # Barcha qismlarni bazaga birvarakay saqlash
+        for fid in file_ids:
+            await conn.execute(
+                "INSERT INTO episodes (anime_code, season, ep_num, file_id) VALUES (?, ?, ?, ?)",
+                (code, season, curr_ep, fid)
+            )
+            curr_ep += 1
+        await conn.commit()
+
+        async with conn.execute("SELECT ch_id FROM auto_channels") as cursor:
+            auto_ch = await cursor.fetchall()
+
+    end_ep = curr_ep - 1
+    await message.answer(f"✅ Barcha {len(file_ids)} ta qism saqlandi va avto-postlar yuborildi!", reply_markup=admin_menu())
+
+    bot_info = await bot.get_me()
+    ikb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🎬 Botda tomosha qilish", url=f"https://t.me/{bot_info.username}?start={code}")
+    ]])
+
+    # Avto-kanalga post tashlash
+    for (ch_id,) in auto_ch:
+        try:
+            if count == 0:
+                season_text = f"🔥 **YANGI FASL PREMYERASI!**\n\n🎬 **Nomi:** {title}\n🗓 **Fasl:** {season}-Fasl\n🔑 **Kodi:** `{code}`"
+                await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=season_text, reply_markup=ikb, parse_mode="Markdown")
+
+            ep_text = f"🎬 **{title}**\n\n📌 **{season}-Fasl | {data['start_ep']}-{end_ep}-Qismlar yuklandi!**\n🔑 **Anime kodi:** `{code}`"
+            await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=ep_text, reply_markup=ikb, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Auto post error: {e}")
+
+    await state.clear()
+    
 # --- CHANNEL MANAGEMENT ---
 @dp.message(F.text == "📢 Majburiy kanallar")
 async def channels_cmd(message: types.Message):
