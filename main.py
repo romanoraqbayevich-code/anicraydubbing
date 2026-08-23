@@ -41,6 +41,13 @@ class EpisodeState(StatesGroup):
     video = State()
     poster = State()
 
+class BulkEpisodeState(StatesGroup):
+    code = State()
+    season = State()
+    start_ep = State()
+    videos = State()
+    poster = State()
+
 class ChannelState(StatesGroup):
     ch_type = State()
     ch_id = State()
@@ -121,13 +128,17 @@ async def check_subscribes(user_id: int):
 def admin_menu():
     kb = [
         [KeyboardButton(text="➕ Anime qo‘shish"), KeyboardButton(text="➕ Qism qo‘shish")],
-        [KeyboardButton(text="✏️ Anime tahrirlash"), KeyboardButton(text="🗑 Anime o‘chirish")],
-        [KeyboardButton(text="📢 Majburiy kanallar"), KeyboardButton(text="🔗 Qo'shimcha linklar")],
-        [KeyboardButton(text="📢 Avto-kanal biriktirish"), KeyboardButton(text="📨 Xabar yuborish")],
-        [KeyboardButton(text="📊 Mukammal Statistika"), KeyboardButton(text="👥 Adminlar ro'yxati")],
-        [KeyboardButton(text="👤 Admin qo'shish"), KeyboardButton(text="🗑 Admin o'chirish")],
-        [KeyboardButton(text="⚙️ Bot holati")]
+        [KeyboardButton(text="📦 Ko‘p qism qo‘shish"), KeyboardButton(text="✏️ Anime tahrirlash")],
+        [KeyboardButton(text="🗑 Anime o‘chirish"), KeyboardButton(text="📢 Majburiy kanallar")],
+        [KeyboardButton(text="🔗 Qo'shimcha linklar"), KeyboardButton(text="📢 Avto-kanal biriktirish")],
+        [KeyboardButton(text="📨 Xabar yuborish"), KeyboardButton(text="📊 Mukammal Statistika")],
+        [KeyboardButton(text="👥 Adminlar ro'yxati"), KeyboardButton(text="👤 Admin qo'shish")],
+        [KeyboardButton(text="🗑 Admin o'chirish")]
     ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+def bulk_finish_kb():
+    kb = [[KeyboardButton(text="✅ Yuklashni tugatish")]]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 # --- RENDER PORT HEALTH CHECK ---
@@ -242,15 +253,6 @@ async def check_sub_cb(call: types.CallbackQuery):
             await call.message.answer("✅ Obuna tasdiqlandi! Anime kodini yuborishingiz mumkin:")
     else:
         await call.answer("❌ Barcha kanallarga a'zo bo'lmadingiz!", show_alert=True)
-
-# --- BOT STATUS ---
-@dp.message(F.text == "⚙️ Bot holati")
-async def toggle_bot(message: types.Message):
-    if not await is_admin(message.from_user.id): return
-    global BOT_ACTIVE
-    BOT_ACTIVE = not BOT_ACTIVE
-    st = "🟢 FAOL (ON)" if BOT_ACTIVE else "🔴 TO'XTATILGAN (OFF)"
-    await message.answer(f"⚙️ Bot holati o'zgartirildi: **{st}**", parse_mode="Markdown")
 
 # --- ANIME MANAGEMENT ---
 @dp.message(F.text == "➕ Anime qo‘shish")
@@ -393,6 +395,119 @@ async def add_ep_finish(message: types.Message, state: FSMContext):
                 await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=season_text, reply_markup=ikb, parse_mode="Markdown")
 
             ep_text = f"🎬 **{title}**\n\n📌 **{season}-Fasl | {ep_num}-Qism**\n🔑 **Anime kodi:** `{code}`"
+            await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=ep_text, reply_markup=ikb, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Auto post error: {e}")
+
+    await state.clear()
+
+# --- BULK EPISODE UPLOAD (KO'P QISM QO'SHISH) ---
+@dp.message(F.text == "📦 Ko‘p qism qo‘shish")
+async def bulk_ep_start(message: types.Message, state: FSMContext):
+    if not await is_admin(message.from_user.id): return
+    await state.set_state(BulkEpisodeState.code)
+    await message.answer("Anime kodini kiriting:")
+
+@dp.message(BulkEpisodeState.code)
+async def bulk_ep_code(message: types.Message, state: FSMContext):
+    code = message.text.strip()
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT title FROM anime WHERE code = ?", (code,)) as cursor:
+            anime = await cursor.fetchone()
+    if not anime:
+        await message.answer("❌ Anime topilmadi!")
+        await state.clear()
+        return
+    await state.update_data(code=code, title=anime[0])
+    await state.set_state(BulkEpisodeState.season)
+    await message.answer("Fasl raqamini kiriting (masalan: `1`):")
+
+@dp.message(BulkEpisodeState.season)
+async def bulk_ep_season(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return
+    await state.update_data(season=int(message.text))
+    await state.set_state(BulkEpisodeState.start_ep)
+    await message.answer("Nechinchi qismdan boshlab yuklaysiz? (masalan: `1`):")
+
+@dp.message(BulkEpisodeState.start_ep)
+async def bulk_ep_start_num(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return
+    await state.update_data(start_ep=int(message.text), videos=[])
+    await state.set_state(BulkEpisodeState.videos)
+    await message.answer(
+        "📹 Endi videolarni **tartib bilan, birin-ketin** yuboring "
+        "(1-qism, 2-qism, 3-qism...).\n\n"
+        "Barchasini yuborib bo'lgach, pastdagi «✅ Yuklashni tugatish» tugmasini bosing.",
+        reply_markup=bulk_finish_kb(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(BulkEpisodeState.videos, F.video)
+async def bulk_ep_collect_video(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    videos = data.get('videos', [])
+    videos.append(message.video.file_id)
+    await state.update_data(videos=videos)
+    start_ep = data['start_ep']
+    await message.answer(f"✅ {start_ep + len(videos) - 1}-qism qabul qilindi. (Jami: {len(videos)} ta)\nDavom eting yoki tugating.")
+
+@dp.message(BulkEpisodeState.videos, F.text == "✅ Yuklashni tugatish")
+async def bulk_ep_finish_upload(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    videos = data.get('videos', [])
+    if not videos:
+        await message.answer("❌ Hech qanday video yuklanmadi! Kamida bitta video yuboring.")
+        return
+    await state.set_state(BulkEpisodeState.poster)
+    await message.answer(
+        f"📸 {len(videos)} ta qism uchun kanalga avto-post qilinadigan **POSTER (RASM)**ni yuboring:",
+        reply_markup=types.ReplyKeyboardRemove(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(BulkEpisodeState.videos)
+async def bulk_ep_wrong_input(message: types.Message):
+    await message.answer("⚠️ Iltimos, video yuboring yoki «✅ Yuklashni tugatish» tugmasini bosing.")
+
+@dp.message(BulkEpisodeState.poster, F.photo)
+async def bulk_ep_save(message: types.Message, state: FSMContext):
+    poster_id = message.photo[-1].file_id
+    data = await state.get_data()
+    code, season, start_ep, videos, title = data['code'], data['season'], data['start_ep'], data['videos'], data['title']
+
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT COUNT(*) FROM episodes WHERE anime_code = ? AND season = ?", (code, season)) as cursor:
+            existing_count = (await cursor.fetchone())[0]
+
+        for i, file_id in enumerate(videos):
+            ep_num = start_ep + i
+            await conn.execute("INSERT INTO episodes (anime_code, season, ep_num, file_id) VALUES (?, ?, ?, ?)", (code, season, ep_num, file_id))
+        await conn.commit()
+
+        async with conn.execute("SELECT ch_id FROM auto_channels") as cursor:
+            auto_ch = await cursor.fetchall()
+
+    end_ep = start_ep + len(videos) - 1
+    await message.answer(
+        f"✅ {len(videos)} ta qism ({start_ep}-{end_ep}) saqlandi va avto-postlar yuborildi!",
+        reply_markup=admin_menu()
+    )
+
+    bot_info = await bot.get_me()
+    ikb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🎬 Botda tomosha qilish", url=f"https://t.me/{bot_info.username}?start={code}")
+    ]])
+
+    for (ch_id,) in auto_ch:
+        try:
+            if existing_count == 0:
+                season_text = f"🔥 **YANGI FASL PREMYERASI!**\n\n🎬 **Nomi:** {title}\n🗓 **Fasl:** {season}-Fasl\n🔑 **Kodi:** `{code}`"
+                await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=season_text, reply_markup=ikb, parse_mode="Markdown")
+
+            if len(videos) > 1:
+                ep_text = f"🎬 **{title}**\n\n📌 **{season}-Fasl | {start_ep}-{end_ep}-Qismlar**\n🔑 **Anime kodi:** `{code}`"
+            else:
+                ep_text = f"🎬 **{title}**\n\n📌 **{season}-Fasl | {start_ep}-Qism**\n🔑 **Anime kodi:** `{code}`"
             await bot.send_photo(chat_id=ch_id, photo=poster_id, caption=ep_text, reply_markup=ikb, parse_mode="Markdown")
         except Exception as e:
             print(f"Auto post error: {e}")
