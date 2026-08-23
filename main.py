@@ -4,6 +4,8 @@ import os
 from aiohttp import web
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -16,14 +18,22 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 import aiosqlite
 
 # ----------------------------------------------------------------------
-# 1. SOZLAMALAR
+# 1. SOZLAMALAR VA ENVIRONMENT
 # ----------------------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8848385049:AAFC5C0ko3piaKdarVjnbSXuIGy3m73CHcM")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "8369095793"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID_RAW = os.getenv("ADMIN_ID", "0")
+ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW.isdigit() else 0
 DB_NAME = "anime_database.db"
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+
+# aiogram >= 3.7.0 uchun to'g'ri Bot initsializatsiyasi
+session = AiohttpSession(timeout=120.0)
+bot = Bot(
+    token=BOT_TOKEN,
+    session=session,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
@@ -50,7 +60,8 @@ async def init_db():
         await db.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
         await db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
         
-        await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (ADMIN_ID,))
+        if ADMIN_ID != 0:
+            await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (ADMIN_ID,))
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bot_status', 'ON')")
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_channel', '')")
         await db.commit()
@@ -73,7 +84,7 @@ async def set_setting(key: str, value: str):
         await db.commit()
 
 # ----------------------------------------------------------------------
-# 3. MAJBURIIY OBUNA
+# 3. MAJBURIIY OBUNA TEKSHIRUVI
 # ----------------------------------------------------------------------
 async def check_subscriptions(user_id: int) -> tuple[bool, InlineKeyboardMarkup]:
     async with aiosqlite.connect(DB_NAME) as db:
@@ -169,7 +180,11 @@ async def send_main_menu(message: Message):
     kb_list = [[InlineKeyboardButton(text=title, url=url)] for title, url in links]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=kb_list) if kb_list else None
     
-    text = "👋 Xush kelibsiz! Anime kodini yuboring:"
+    text = "Assalomu alaykum! ✨🌸
+
+Aniqlik, yuqori sifat va eng so'nggi premyeralarni qadrlovchilar uchun maxsus makon — @anicray_anime kanaliga xush kelibsiz! 🚀🎉
+
+Bu shunchaki kanal emas, balki haqiqiy anime ixlosmandlari yig'iladigan va eng sara epizodlardan bahramand bo'ladigan chinakam maskandir 🏰✨:"
     if await is_admin(message.from_user.id):
         admin_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="👑 Admin Panel")]], resize_keyboard=True)
         await message.answer(text, reply_markup=reply_markup)
@@ -237,7 +252,7 @@ async def code_search(message: Message, state: FSMContext):
     await send_anime_panel(message, message.text.strip())
 
 # ----------------------------------------------------------------------
-# 6. ADMIN PANEL (TO'LIQ BOSHQA RUTERLAR)
+# 6. ADMIN PANEL HANDLERLARI
 # ----------------------------------------------------------------------
 @router.message(F.text == "👑 Admin Panel")
 async def admin_panel_cmd(message: Message):
@@ -247,7 +262,7 @@ async def admin_panel_cmd(message: Message):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Anime Qo'shish", callback_data="adm_add_anime"), InlineKeyboardButton(text="✏️ Tahrirlash", callback_data="adm_edit_anime")],
-        [InlineKeyboardButton(text="➕ Qism Qo'shish (Yakka)", callback_data="adm_add_ep"), InlineKeyboardButton(text="📦 12-qism Paket Yuklash", callback_data="adm_add_batch")],
+        [InlineKeyboardButton(text="➕ Qism Qo'shish (Yakka)", callback_data="adm_add_ep"), InlineKeyboardButton(text="📦 Paket Yuklash (12 qism)", callback_data="adm_add_batch")],
         [InlineKeyboardButton(text="📢 Majburiy Kanallar", callback_data="adm_channels"), InlineKeyboardButton(text="🔗 Havolalar", callback_data="adm_links")],
         [InlineKeyboardButton(text="⚙️ Avto-Kanal Sozlash", callback_data="adm_auto_channel"), InlineKeyboardButton(text="📨 Broadcast", callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="📊 Statistika", callback_data="adm_stats"), InlineKeyboardButton(text="👥 Adminlar Boshqaruvi", callback_data="adm_manage_admins")],
@@ -264,7 +279,6 @@ async def toggle_status(callback: CallbackQuery):
     await callback.answer(f"Bot holati {new_st} ga o'zgartirildi.")
     await admin_panel_cmd(callback.message)
 
-# --- Anime Qo'shish & Tahrirlash & O'chirish ---
 @router.callback_query(F.data == "adm_add_anime")
 async def add_anime_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Anime uchun unikal KOD kiriting (masalan: 101):")
@@ -315,7 +329,6 @@ async def delete_anime_cmd(message: Message):
         await db.commit()
     await message.answer(f"🗑 Kodi <code>{code}</code> bo'lgan anime va barcha qismlari o'chirildi.")
 
-# --- Yakka Qism Qo'shish ---
 @router.callback_query(F.data == "adm_add_ep")
 async def add_ep_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Anime kodini kiriting:")
@@ -370,7 +383,6 @@ async def add_ep_poster(message: Message, state: FSMContext):
 
     await state.clear()
 
-# --- 12-Qism Paket Yuklash ---
 @router.callback_query(F.data == "adm_add_batch")
 async def add_batch_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Anime kodini kiriting:")
@@ -438,7 +450,6 @@ async def add_batch_poster(message: Message, state: FSMContext):
 
     await state.clear()
 
-# --- Avto-Kanal, Majburiy Kanallar, Linklar ---
 @router.callback_query(F.data == "adm_auto_channel")
 async def set_auto_ch_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Avto-post kanali ID-sini kiriting (masalan: -100123456789):")
@@ -484,7 +495,6 @@ async def add_link_done(message: Message, state: FSMContext):
         await message.answer("❌ Format noto'g'ri.")
     await state.clear()
 
-# --- Adminlar Boshqaruvi ---
 @router.callback_query(F.data == "adm_manage_admins")
 async def manage_admins(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -505,7 +515,6 @@ async def add_admin_done(message: Message, state: FSMContext):
         await message.answer("❌ Noto'g'ri ID format.")
     await state.clear()
 
-# --- Broadcast & Statistika ---
 @router.callback_query(F.data == "adm_broadcast")
 async def broadcast_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Barcha foydalanuvchilarga yuboriladigan xabarni kiriting:")
@@ -536,10 +545,10 @@ async def show_stats(callback: CallbackQuery):
     await callback.message.answer(f"📊 <b>Bot Statistikasi:</b>\n\n👤 Foydalanuvchilar: {u_count}\n🎬 Animelar: {a_count}\n🎞 Qismlar: {e_count}\n📢 Majburiy Kanallar: {ch_count}")
 
 # ----------------------------------------------------------------------
-# 7. AIOHTTP SERVER & RUNNER
+# 7. AIOHTTP SERVER & PORT CHECK
 # ----------------------------------------------------------------------
 async def handle_ping(request):
-    return web.Response(text="Bot runs smoothly!")
+    return web.Response(text="Bot is running!")
 
 async def start_web_server():
     app = web.Application()
@@ -553,7 +562,7 @@ async def start_web_server():
 async def main():
     await init_db()
     await start_web_server()
-    print("Bot va Server faol!")
+    print("Bot va Server muvaffaqiyatli ishga tushdi...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
