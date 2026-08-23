@@ -18,7 +18,7 @@ import aiosqlite
 # ----------------------------------------------------------------------
 # 1. SOZLAMALAR
 # ----------------------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8890621891:AAFX0yKQ81saY144zaFiBfGmAu75vi4cnmM")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8848385049:AAFC5C0ko3piaKdarVjnbSXuIGy3m73CHcM")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8369095793"))
 DB_NAME = "anime_database.db"
 
