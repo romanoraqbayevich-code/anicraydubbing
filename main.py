@@ -20,8 +20,8 @@ import aiosqlite
 # ----------------------------------------------------------------------
 # 1. SOZLAMALAR VA ENVIRONMENT
 # ----------------------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID_RAW = os.getenv("ADMIN_ID", "0")
+BOT_TOKEN = os.getenv("8848385049:AAFC5C0ko3piaKdarVjnbSXuIGy3m73CHcM")
+ADMIN_ID_RAW = os.getenv("8369095793", "0")
 ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW.isdigit() else 0
 DB_NAME = "anime_database.db"
 
@@ -180,11 +180,7 @@ async def send_main_menu(message: Message):
     kb_list = [[InlineKeyboardButton(text=title, url=url)] for title, url in links]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=kb_list) if kb_list else None
     
-    text = "Assalomu alaykum! ✨🌸
-
-Aniqlik, yuqori sifat va eng so'nggi premyeralarni qadrlovchilar uchun maxsus makon — @anicray_anime kanaliga xush kelibsiz! 🚀🎉
-
-Bu shunchaki kanal emas, balki haqiqiy anime ixlosmandlari yig'iladigan va eng sara epizodlardan bahramand bo'ladigan chinakam maskandir 🏰✨:"
+    text ="Assalomu alaykum! ✨🌸\nXush kelibsiz! Anime kodini yuboring:"
     if await is_admin(message.from_user.id):
         admin_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="👑 Admin Panel")]], resize_keyboard=True)
         await message.answer(text, reply_markup=reply_markup)
