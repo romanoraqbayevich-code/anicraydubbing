@@ -154,7 +154,7 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# --- HELPER: SEND ANIME BY CODE ---
+# --- HELPER: SEND ANIME BY CODE (STEP 1 - FASLLAR) ---
 async def send_anime_by_code(message_or_call, code: str):
     if isinstance(message_or_call, types.Message):
         send_func = message_or_call.answer
@@ -168,23 +168,79 @@ async def send_anime_by_code(message_or_call, code: str):
             await send_func("❌ Bu kodli anime topilmadi yoki o'chirilgan.")
             return
 
-        async with conn.execute("SELECT season, ep_num FROM episodes WHERE anime_code = ? ORDER BY season ASC, ep_num ASC", (code,)) as cursor:
-            episodes = await cursor.fetchall()
+        async with conn.execute(
+            "SELECT DISTINCT season FROM episodes WHERE anime_code = ? ORDER BY season ASC",
+            (code,)
+        ) as cursor:
+            seasons = [row[0] for row in await cursor.fetchall()]
 
-    if not episodes:
+    if not seasons:
         await send_func(f"🎬 **{anime[0]}** animedan qismlar topilmadi.", parse_mode="Markdown")
         return
 
+    # Agar faqat 1 ta fasl bo'lsa, to'g'ridan-to'g'ri qismlar ro'yxatiga o'tadi
+    if len(seasons) == 1:
+        await send_season_episodes(send_func, code, anime[0], seasons[0])
+        return
+
     ikb, row = [], []
-    for season, ep_num in episodes:
-        row.append(InlineKeyboardButton(text=f"{season}-Fasl {ep_num}-Qism", callback_data=f"play_{code}_{season}_{ep_num}"))
-        if len(row) == 2:
+    for season in seasons:
+        row.append(InlineKeyboardButton(text=f"{season}-Fasl", callback_data=f"season_{code}_{season}"))
+        if len(row) == 3:
             ikb.append(row)
             row = []
-    if row: ikb.append(row)
+    if row:
+        ikb.append(row)
 
-    caption = f"🎬 **{anime[0]}**\nKo'rmoqchi bo'lgan qismingizni tanlang:"
+    caption = f"🎬 **{anime[0]}**\nFaslni tanlang:"
     await send_func(caption, reply_markup=InlineKeyboardMarkup(inline_keyboard=ikb), parse_mode="Markdown")
+
+
+# --- HELPER: SEND EPISODES OF A SEASON (STEP 2 - QISMLAR, FAQAT RAQAM) ---
+async def send_season_episodes(send_func, code: str, title: str, season: int):
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute(
+            "SELECT ep_num FROM episodes WHERE anime_code = ? AND season = ? ORDER BY ep_num ASC",
+            (code, season)
+        ) as cursor:
+            ep_nums = [row[0] for row in await cursor.fetchall()]
+
+    ikb, row = [], []
+    for ep_num in ep_nums:
+        row.append(InlineKeyboardButton(text=str(ep_num), callback_data=f"play_{code}_{season}_{ep_num}"))
+        if len(row) == 5:
+            ikb.append(row)
+            row = []
+    if row:
+        ikb.append(row)
+
+    ikb.append([InlineKeyboardButton(text="🔙 Fasllarga qaytish", callback_data=f"backseason_{code}")])
+
+    caption = f"🎬 **{title}**\n📌 {season}-Fasl — qismni tanlang:"
+    await send_func(caption, reply_markup=InlineKeyboardMarkup(inline_keyboard=ikb), parse_mode="Markdown")
+
+
+@dp.callback_query(F.data.startswith("season_"))
+async def season_selected(call: types.CallbackQuery):
+    _, code, season = call.data.split("_")
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT title FROM anime WHERE code = ?", (code,)) as cursor:
+            anime = await cursor.fetchone()
+    if not anime:
+        await call.answer("❌ Anime topilmadi!", show_alert=True)
+        return
+    await call.message.delete()
+    await send_season_episodes(call.message.answer, code, anime[0], int(season))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("backseason_"))
+async def back_to_seasons(call: types.CallbackQuery):
+    code = call.data.split("_")[1]
+    await call.message.delete()
+    await send_anime_by_code(call, code)
+    await call.answer()
+
 
 # --- START COMMAND & DEEP LINK HANDLER ---
 @dp.message(CommandStart())
@@ -207,7 +263,7 @@ async def start_cmd(message: types.Message, state: FSMContext, command: CommandO
         for idx, (link, ch_type) in enumerate(unsubbed, 1):
             type_label = " (Zayavka)" if ch_type == "zayafka" else ""
             ikb.append([InlineKeyboardButton(text=f"📢 {idx}-Kanalga a'zo bo'lish{type_label}", url=link)])
-        
+
         cb_data = f"check_sub_{args}" if args else "check_sub"
         ikb.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data=cb_data)])
         await message.answer("⚠️ Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:", reply_markup=InlineKeyboardMarkup(inline_keyboard=ikb))
@@ -724,7 +780,7 @@ async def admin_save(message: types.Message, state: FSMContext):
         await message.answer("❌ ID faqat raqamlardan iborat bo'lishi kerak!")
         return
     new_id = int(message.text.strip())
-    
+
     if new_id == ADMIN_ID:
         await message.answer("⚠️ Bu ID asosiy admin IDsi bilan bir xil!")
         await state.clear()
@@ -749,7 +805,7 @@ async def admin_delete_save(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
         await message.answer("❌ ID faqat raqamlardan iborat bo'lishi kerak!")
         return
-    
+
     target_id = int(message.text.strip())
     if target_id == ADMIN_ID:
         await message.answer("❌ Asosiy adminni o'chirib bo'lmaydi!")
@@ -759,7 +815,7 @@ async def admin_delete_save(message: types.Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as conn:
         async with conn.execute("SELECT user_id FROM admins WHERE user_id = ?", (target_id,)) as cursor:
             admin_exists = await cursor.fetchone()
-        
+
         if admin_exists:
             await conn.execute("DELETE FROM admins WHERE user_id = ?", (target_id,))
             await conn.commit()
