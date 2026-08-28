@@ -16,8 +16,17 @@ from aiogram.types import (
 )
 
 # --- CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8848385049:AAFC5C0ko3piaKdarVjnbSXuIGy3m73CHcM")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "8369095793"))
+# Token va admin ID endi FAQAT Render'ning Environment Variables bo'limidan olinadi.
+# Kodda default qiymat yo'q, shuning uchun token GitHub'ga tushib qolsa ham xavfsiz.
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+_admin_id_raw = os.getenv("ADMIN_ID")
+
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN environment variable topilmadi! Render'da Environment bo'limiga qo'shing.")
+if not _admin_id_raw:
+    raise RuntimeError("❌ ADMIN_ID environment variable topilmadi! Render'da Environment bo'limiga qo'shing.")
+
+ADMIN_ID = int(_admin_id_raw)
 DB_NAME = "anime_bot.db"
 
 bot = Bot(token=BOT_TOKEN)
