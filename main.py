@@ -28,7 +28,7 @@ if not _admin_id_raw:
     raise RuntimeError("❌ ADMIN_ID environment variable topilmadi! Render'da Environment bo'limiga qo'shing.")
 
 ADMIN_ID = int(_admin_id_raw)
-DB_NAME = "anime_bot.db"
+DB_NAME = "anime_bot.db"  # Supabase'da ishlatilmaydi, faqat eski kod bilan moslik uchun
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -78,40 +78,8 @@ class AdminState(StatesGroup):
 class AutoChannelState(StatesGroup):
     ch_id = State()
 
-# --- DATABASE SETUP ---
-async def init_db():
-    async with aiosqlite.connect(DB_NAME) as conn:
-        await conn.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
-        await conn.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
-        await conn.execute("CREATE TABLE IF NOT EXISTS anime (code TEXT PRIMARY KEY, title TEXT)")
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS episodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                anime_code TEXT,
-                season INTEGER,
-                ep_num INTEGER,
-                file_id TEXT
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS channels (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ch_id INTEGER,
-                ch_type TEXT,
-                title TEXT,
-                link TEXT
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS extra_links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT,
-                url TEXT
-            )
-        """)
-        await conn.execute("CREATE TABLE IF NOT EXISTS auto_channels (ch_id INTEGER PRIMARY KEY)")
-        await conn.commit()
-
+# --- DATABASE HELPERS ---
+# (Jadvallar database.py ichidagi init_db() orqali Supabase'da yaratiladi)
 async def is_admin(user_id: int) -> bool:
     if user_id == ADMIN_ID:
         return True
@@ -837,12 +805,12 @@ async def admin_delete_save(message: types.Message, state: FSMContext):
 
 # --- SEARCH & DELIVERY ---
 @dp.message(F.text & ~F.text.startswith("/"))
-async def search_anime(message: types.Message):
+async def search_anime(message: types.Message, state: FSMContext):
     if not BOT_ACTIVE and not await is_admin(message.from_user.id): return
 
     unsubbed = await check_subscribes(message.from_user.id)
     if unsubbed and not await is_admin(message.from_user.id):
-        await start_cmd(message, None)
+        await start_cmd(message, state)
         return
 
     code = message.text.strip()
