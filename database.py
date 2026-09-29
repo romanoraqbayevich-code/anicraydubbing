@@ -4,11 +4,10 @@ database.py - Supabase (PostgreSQL) versiyasi.
 Kerak: requirements.txt ga `asyncpg` qo'shing, `aiosqlite` ni olib tashlang.
 Environment variable: DATABASE_URL  (Supabase Session pooler URI)
 
-main.py da faqat ikki narsani almashtirasiz:
-    import aiosqlite            ->  from database import connect
-    aiosqlite.connect(DB_NAME)  ->  connect()
-Qolgan `await db.execute(...)`, `async with db.execute(...) as cur`,
-`fetchone()`, `fetchall()`, `commit()` va `?` belgili so'rovlar o'zgarishsiz ishlaydi.
+main.py da `import aiosqlite` o'rniga `import database as aiosqlite` yozilsa,
+`aiosqlite.connect(DB_NAME)`, `await conn.execute(...)`,
+`async with conn.execute(...) as cursor`, `fetchone()`, `fetchall()`, `commit()`
+va `?` belgili so'rovlar o'zgarishsiz ishlayveradi.
 """
 import os
 import re
@@ -16,7 +15,6 @@ import re
 import asyncpg
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-DB_NAME = "supabase"  # eski `from database import DB_NAME` importlari sinmasligi uchun
 
 _pool = None
 
@@ -24,8 +22,8 @@ _pool = None
 _PK = {
     "users": "user_id",
     "admins": "user_id",
-    "settings": "key",
-    "animes": "code",
+    "anime": "code",
+    "auto_channels": "ch_id",
 }
 
 _OR_IGNORE = re.compile(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO", re.I)
@@ -137,7 +135,8 @@ class _Connection:
         pass  # asyncpg har so'rovni avtomatik commit qiladi
 
 
-def connect():
+def connect(*_args, **_kwargs):
+    """aiosqlite.connect(DB_NAME) o'rnida ishlashi uchun argumentlar e'tiborsiz qoldiriladi."""
     return _Connection()
 
 
@@ -156,63 +155,37 @@ async def init_db():
         )
 
     async with _pool.acquire() as conn:
-        # Foydalanuvchilar (Telegram ID lari 32-bitdan katta bo'lishi mumkin -> BIGINT)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY
-            )
-        """)
-
-        # Adminlar
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS admins (
-                user_id BIGINT PRIMARY KEY
-            )
-        """)
-
-        # Kanallar (Majburiy obuna uchun)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS channels (
-                id BIGSERIAL PRIMARY KEY,
-                channel_id TEXT,
-                invite_link TEXT
-            )
-        """)
-
-        # Animelar
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS animes (
-                id BIGSERIAL PRIMARY KEY,
-                code TEXT UNIQUE,
-                title TEXT,
-                description TEXT,
-                poster_id TEXT
-            )
-        """)
-
-        # Qismlar
+        # Telegram ID lari 32-bitdan katta bo'lishi mumkin -> BIGINT
+        await conn.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS admins (user_id BIGINT PRIMARY KEY)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS anime (code TEXT PRIMARY KEY, title TEXT)")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
                 id BIGSERIAL PRIMARY KEY,
                 anime_code TEXT,
                 season INTEGER,
-                episode_num INTEGER,
+                ep_num INTEGER,
                 file_id TEXT
             )
         """)
-
-        # Bot sozlamalari
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
+            CREATE TABLE IF NOT EXISTS channels (
+                id BIGSERIAL PRIMARY KEY,
+                ch_id BIGINT,
+                ch_type TEXT,
+                title TEXT,
+                link TEXT
             )
         """)
-
         await conn.execute("""
-            INSERT INTO settings (key, value) VALUES ('bot_status', 'active')
-            ON CONFLICT (key) DO NOTHING
+            CREATE TABLE IF NOT EXISTS extra_links (
+                id BIGSERIAL PRIMARY KEY,
+                title TEXT,
+                url TEXT
+            )
         """)
+        await conn.execute("CREATE TABLE IF NOT EXISTS auto_channels (ch_id BIGINT PRIMARY KEY)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_lookup ON episodes (anime_code, season, ep_num)")
 
 
 async def close_db():
