@@ -1,7 +1,8 @@
 import os
 import asyncio
 import logging
-import aiosqlite
+import database as aiosqlite
+from database import init_db
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, CommandObject
